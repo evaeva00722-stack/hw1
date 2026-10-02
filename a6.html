@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>星際守衛｜太空射擊</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 20px; color: #eaf7ff; background: radial-gradient(ellipse at top, #172954, #070b19 70%); font-family: system-ui, sans-serif; }
+        main { width: min(100%, 540px); text-align: center; }
+        h1 { margin: 0 0 6px; color: #8be9ff; letter-spacing: .12em; text-shadow: 0 0 18px #22c8ff; }
+        p { margin: 0 0 12px; color: #bacbe3; font-size: .9rem; }
+        .hud { display: flex; justify-content: space-between; padding: 10px 14px; background: #101a31; border: 1px solid #27436a; border-bottom: 0; border-radius: 12px 12px 0 0; font-weight: 700; }
+        canvas { display: block; width: 100%; height: auto; background: #050916; border: 1px solid #27436a; box-shadow: 0 0 35px #148ac233; touch-action: none; }
+        .buttons, .touch { display: flex; justify-content: center; gap: 10px; margin-top: 12px; }
+        button { border: 1px solid #4b8db9; border-radius: 9px; padding: 10px 18px; color: #eefaff; background: #142744; font: inherit; font-weight: 700; cursor: pointer; }
+        button:hover { background: #1d3b61; }
+        .touch { display: none; }
+        @media (pointer: coarse) { .touch { display: flex; } .touch button { min-width: 58px; touch-action: none; } }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>星際守衛</h1>
+        <p>移動：← → 或 A、D　｜　射擊：空白鍵</p>
+        <div class="hud"><span>分數：<span id="score">0</span></span><span>生命：<span id="lives">❤❤❤</span></span></div>
+        <canvas id="game" width="520" height="600" aria-label="太空射擊遊戲"></canvas>
+        <div class="buttons"><button id="start">開始遊戲</button><button id="sound-toggle">音效：開</button></div>
+        <div class="touch"><button data-key="ArrowLeft">◀</button><button data-key="Space">🔥 射擊</button><button data-key="ArrowRight">▶</button></div>
+    </main>
+    <script>
+        const canvas = document.querySelector('#game'), ctx = canvas.getContext('2d');
+        const scoreLabel = document.querySelector('#score'), livesLabel = document.querySelector('#lives');
+        const keys = new Set();
+        let ship, shots, enemies, stars, score, lives, running = false, lastTime = 0, spawnTime = 0;
+        let audio, muted = false, lastShot = 0;
+
+        function playTone(freq, duration, type = 'sine', volume = .055) {
+            if (muted) return;
+            try {
+                audio ||= new (window.AudioContext || window.webkitAudioContext)();
+                if (audio.state === 'suspended') audio.resume();
+                const oscillator = audio.createOscillator(), gain = audio.createGain();
+                oscillator.type = type;
+                oscillator.frequency.setValueAtTime(freq, audio.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(Math.max(40, freq * .45), audio.currentTime + duration);
+                gain.gain.setValueAtTime(volume, audio.currentTime);
+                gain.gain.exponentialRampToValueAtTime(.001, audio.currentTime + duration);
+                oscillator.connect(gain).connect(audio.destination);
+                oscillator.start(); oscillator.stop(audio.currentTime + duration);
+            } catch (_) {}
+        }
+        function reset() {
+            ship = { x: canvas.width / 2, y: canvas.height - 55, speed: 310 };
+            shots = []; enemies = []; score = 0; lives = 3; spawnTime = 0;
+            stars = Array.from({ length: 75 }, () => ({ x: Math.random() * canvas.width, y: Math.random() * canvas.height, size: Math.random() * 2 + .5, speed: Math.random() * 45 + 15 }));
+            scoreLabel.textContent = score; livesLabel.textContent = '❤❤❤';
+        }
+        function draw() {
+            ctx.fillStyle = '#050916'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#d8edff';
+            for (const star of stars) { ctx.globalAlpha = .45 + star.size / 4; ctx.fillRect(star.x, star.y, star.size, star.size); }
+            ctx.globalAlpha = 1;
+            if (ship) {
+                ctx.save(); ctx.translate(ship.x, ship.y); ctx.fillStyle = '#64e8ff'; ctx.shadowColor = '#38d9ff'; ctx.shadowBlur = 16;
+                ctx.beginPath(); ctx.moveTo(0, -20); ctx.lineTo(16, 17); ctx.lineTo(0, 10); ctx.lineTo(-16, 17); ctx.closePath(); ctx.fill(); ctx.restore();
+            }
+            ctx.fillStyle = '#72f5ff'; ctx.shadowColor = '#26eaff'; ctx.shadowBlur = 10;
+            for (const shot of shots) ctx.fillRect(shot.x - 2, shot.y - 9, 4, 14);
+            ctx.shadowBlur = 0;
+            for (const enemy of enemies) {
+                ctx.fillStyle = '#ff5478'; ctx.shadowColor = '#ff315d'; ctx.shadowBlur = 12;
+                ctx.beginPath(); ctx.moveTo(enemy.x, enemy.y + 15); ctx.lineTo(enemy.x - 17, enemy.y - 10); ctx.lineTo(enemy.x, enemy.y - 3); ctx.lineTo(enemy.x + 17, enemy.y - 10); ctx.closePath(); ctx.fill();
+            }
+            ctx.shadowBlur = 0;
+            if (!running) {
+                ctx.fillStyle = 'rgba(4,9,23,.7)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.textAlign = 'center'; ctx.fillStyle = '#eaf8ff'; ctx.font = 'bold 27px system-ui';
+                ctx.fillText(lives === 0 ? '遊戲結束' : '準備好出發了嗎？', canvas.width / 2, canvas.height / 2 - 8);
+                ctx.font = '16px system-ui'; ctx.fillStyle = '#9fdcf2';
+                ctx.fillText(lives === 0 ? `最終分數：${score}` : '按「開始遊戲」保衛地球！', canvas.width / 2, canvas.height / 2 + 25);
+            }
+        }
+        function finish() {
+            running = false; document.querySelector('#start').textContent = '再玩一次';
+            playTone(180, .4, 'sawtooth', .07); draw();
+        }
+        function frame(time) {
+            const dt = Math.min((time - lastTime) / 1000 || 0, .04); lastTime = time;
+            if (running) {
+                for (const star of stars) { star.y += star.speed * dt; if (star.y > canvas.height) { star.y = 0; star.x = Math.random() * canvas.width; } }
+                if (keys.has('ArrowLeft') || keys.has('KeyA')) ship.x -= ship.speed * dt;
+                if (keys.has('ArrowRight') || keys.has('KeyD')) ship.x += ship.speed * dt;
+                ship.x = Math.max(20, Math.min(canvas.width - 20, ship.x));
+                if ((keys.has('Space') || keys.has('ArrowUp')) && time - lastShot > 170) {
+                    shots.push({ x: ship.x, y: ship.y - 16 }); lastShot = time; playTone(720, .08, 'square', .03);
+                }
+                spawnTime += dt;
+                if (spawnTime > Math.max(.38, .9 - score / 900)) {
+                    spawnTime = 0; enemies.push({ x: 24 + Math.random() * (canvas.width - 48), y: -15, speed: 95 + Math.random() * 65 + score / 25 });
+                }
+                shots.forEach(shot => shot.y -= 430 * dt);
+                enemies.forEach(enemy => enemy.y += enemy.speed * dt);
+                shots = shots.filter(shot => shot.y > -15);
+                for (const enemy of enemies) {
+                    if (Math.abs(enemy.x - ship.x) < 25 && Math.abs(enemy.y - ship.y) < 28) {
+                        enemy.y = canvas.height + 40; lives--; livesLabel.textContent = '❤'.repeat(lives) || '—'; playTone(120, .22, 'sawtooth', .07);
+                        if (lives <= 0) { finish(); break; }
+                    }
+                    for (const shot of shots) if (Math.abs(shot.x - enemy.x) < 19 && Math.abs(shot.y - enemy.y) < 18) {
+                        enemy.y = canvas.height + 40; shot.y = -30; score += 10; scoreLabel.textContent = score; playTone(260, .1, 'triangle', .06); break;
+                    }
+                    if (enemy.y > canvas.height) {
+                        enemy.y = canvas.height + 40; lives--; livesLabel.textContent = '❤'.repeat(lives) || '—';
+                        if (lives <= 0) { finish(); break; }
+                    }
+                }
+                enemies = enemies.filter(enemy => enemy.y < canvas.height + 20);
+            }
+            draw(); requestAnimationFrame(frame);
+        }
+        document.querySelector('#start').addEventListener('click', () => {
+            if (lives <= 0) reset();
+            running = true; document.querySelector('#start').textContent = '遊戲進行中'; playTone(520, .14);
+        });
+        document.querySelector('#sound-toggle').addEventListener('click', event => {
+            muted = !muted; event.currentTarget.textContent = `音效：${muted ? '關' : '開'}`;
+            if (!muted) playTone(500, .1);
+        });
+        window.addEventListener('keydown', event => {
+            if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Space'].includes(event.code)) event.preventDefault();
+            keys.add(event.code);
+        });
+        window.addEventListener('keyup', event => keys.delete(event.code));
+        window.addEventListener('blur', () => keys.clear());
+        document.querySelectorAll('.touch button').forEach(button => {
+            const key = button.dataset.key;
+            button.addEventListener('pointerdown', event => { event.preventDefault(); keys.add(key); button.setPointerCapture(event.pointerId); });
+            for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) button.addEventListener(type, () => keys.delete(key));
+        });
+        reset(); draw(); requestAnimationFrame(frame);
+    </script>
+</body>
+</html>
